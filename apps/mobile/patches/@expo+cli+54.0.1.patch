@@ -1,0 +1,41 @@
+diff --git a/node_modules/@expo/cli/build/src/run/ios/XcodeBuild.js b/node_modules/@expo/cli/build/src/run/ios/XcodeBuild.js
+index 6169d01..467d20f 100644
+--- a/node_modules/@expo/cli/build/src/run/ios/XcodeBuild.js
++++ b/node_modules/@expo/cli/build/src/run/ios/XcodeBuild.js
+@@ -80,6 +80,7 @@ function _path() {
+     return data;
+ }
+ const _configureCodeSigning = require("./codeSigning/configureCodeSigning");
++const _xcodeCodeSigning = require("./codeSigning/xcodeCodeSigning");
+ const _simulatorCodeSigning = require("./codeSigning/simulatorCodeSigning");
+ const _log = /*#__PURE__*/ _interop_require_wildcard(require("../../log"));
+ const _dir = require("../../utils/dir");
+@@ -232,7 +233,12 @@ async function getXcodeBuildArgsAsync(props) {
+         `id=${props.device.udid}`
+     ];
+     if (!props.isSimulator || (0, _simulatorCodeSigning.simulatorBuildRequiresCodeSigning)(props.projectRoot)) {
+-        const developmentTeamId = await (0, _configureCodeSigning.ensureDeviceIsCodeSignedForDeploymentAsync)(props.projectRoot);
++        let developmentTeamId = await (0, _configureCodeSigning.ensureDeviceIsCodeSignedForDeploymentAsync)(props.projectRoot);
++        if (!developmentTeamId && !props.isSimulator) {
++            const signingInfo = (0, _xcodeCodeSigning.getCodeSigningInfoForPbxproj)(props.projectRoot);
++            const teams = Object.values(signingInfo).flatMap((s) => s.developmentTeams);
++            if (teams.length > 0) developmentTeamId = teams[0];
++        }
+         if (developmentTeamId) {
+             args.push(`DEVELOPMENT_TEAM=${developmentTeamId}`, '-allowProvisioningUpdates', '-allowProvisioningDeviceRegistration');
+         }
+diff --git a/node_modules/@expo/cli/build/src/start/server/middleware/ExpoGoManifestHandlerMiddleware.js b/node_modules/@expo/cli/build/src/start/server/middleware/ExpoGoManifestHandlerMiddleware.js
+index b5cba1b..2cbb2a5 100644
+--- a/node_modules/@expo/cli/build/src/start/server/middleware/ExpoGoManifestHandlerMiddleware.js
++++ b/node_modules/@expo/cli/build/src/start/server/middleware/ExpoGoManifestHandlerMiddleware.js
+@@ -143,7 +143,9 @@ class ExpoGoManifestHandlerMiddleware extends _ManifestMiddleware.ManifestMiddle
+             codeSigningInfo
+         });
+         const expoUpdatesManifest = {
+-            id: _crypto().default.randomUUID(),
++            id: _crypto().default.randomUUID({
++                disableEntropyCache: true
++            }),
+             createdAt: new Date().toISOString(),
+             runtimeVersion,
+             launchAsset: {

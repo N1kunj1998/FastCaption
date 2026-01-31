@@ -1,0 +1,25 @@
+{
+  "name": "api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "health": "node -e \"const u=(process.env.API_URL||'http://localhost:3000').replace(/\\/$/,'')+'/health'; fetch(u).then(r=>r.json()).then(d=>{console.log('API OK:', d); process.exit(d.ok?0:1)}).catch(e=>{console.error('API not reachable:', e.message); process.exit(1)})\""
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "google-auth-library": "^10.5.0",
+    "jsonwebtoken": "^9.0.3",
+    "jwks-rsa": "^3.2.2",
+    "openai": "^4.73.0",
+    "swagger-ui-express": "^5.0.1"
+  }
+}
