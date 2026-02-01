@@ -43,15 +43,24 @@ export const useAuth = () => {
     if (Platform.OS !== 'ios') {
       throw new Error('Sign in with Apple is only available on iOS');
     }
-    const AppleAuthentication = (await import('expo-apple-authentication')).default;
-    const { identityToken } = await AppleAuthentication.signInAsync({
+    const { signInAsync, AppleAuthenticationScope } = await import('expo-apple-authentication');
+    if (typeof signInAsync !== 'function') {
+      throw new Error('Apple Sign-In is not available on this device (e.g. use a real iPhone, not simulator)');
+    }
+    const credential = await signInAsync({
       requestedScopes: [
-        AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
-        AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        AppleAuthenticationScope.FULL_NAME,
+        AppleAuthenticationScope.EMAIL,
       ],
     });
+    const identityToken = credential?.identityToken;
     if (!identityToken) throw new Error('No identity token from Apple');
-    const result = await authWithApple(identityToken);
+    const fullName = credential?.fullName;
+    const name = fullName
+      ? [fullName.givenName, fullName.familyName].filter(Boolean).join(' ').trim() || null
+      : null;
+    console.log('[Auth] Calling backend with Apple identityToken...', name ? `name="${name}"` : 'no name in credential');
+    const result = await authWithApple(identityToken, name);
     setAuth(result);
     close();
     return result;

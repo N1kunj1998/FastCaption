@@ -6,6 +6,7 @@ import jwksClient from "jwks-rsa";
 import { OAuth2Client } from "google-auth-library";
 import OpenAI from "openai";
 import swaggerUi from "swagger-ui-express";
+import { upsertUser, getTrial, ensureTrialStart, incrementTrialUsage, ensureUserIndexes, mergeDuplicateUsersByEmail, TRIAL_DAYS, DAILY_LIMIT_TRIAL } from "./db.js";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -311,6 +312,9 @@ const openApiSpec = {
     "/api/remix-hook": { post: { summary: "Remix hook", responses: { 200: { description: "Remixed hook" } } } },
     "/api/auth/apple": { post: { summary: "Apple sign-in", responses: { 200: { description: "jwt, user" } } } },
     "/api/auth/google": { post: { summary: "Google sign-in", responses: { 200: { description: "jwt, user" } } } },
+    "/api/trial": { get: { summary: "Get trial status (Bearer JWT)", responses: { 200: { description: "trialStartDate, usageToday" } } } },
+    "/api/trial/start": { post: { summary: "Start trial (Bearer JWT)", responses: { 200: { description: "trialStartDate" } } } },
+    "/api/trial/increment": { post: { summary: "Increment today's usage (Bearer JWT)", responses: { 200: { description: "date, count" } } } },
   },
 };
 
@@ -340,7 +344,7 @@ function getAppleSigningKey(header, callback) {
 
 app.post("/api/auth/apple", async (req, res) => {
   try {
-    const { identityToken } = req.body;
+    const { identityToken, name: nameFromClient } = req.body;
     if (!identityToken || typeof identityToken !== "string") {
       return res.status(400).json({ error: "Missing identityToken" });
     }
@@ -352,17 +356,98 @@ app.post("/api/auth/apple", async (req, res) => {
     });
     const sub = decoded.sub;
     const email = decoded.email || null;
-    const user = { id: sub, email, provider: "apple" };
+    const name =
+      typeof nameFromClient === "string" && nameFromClient.trim()
+        ? nameFromClient.trim()
+        : decoded.name
+          ? [decoded.name.firstName, decoded.name.lastName].filter(Boolean).join(" ") || null
+          : null;
+    let canonicalUserId = `apple:${sub}`;
+    try {
+      const result = await upsertUser({ provider: "apple", providerSub: sub, email, name });
+      if (result?.canonicalUserId) canonicalUserId = result.canonicalUserId;
+    } catch (dbErr) {
+      console.warn("[auth/apple] DB upsert failed:", dbErr.message);
+    }
+    const user = { id: sub, email, provider: "apple", userId: canonicalUserId, ...(name ? { name } : {}) };
     const token = jwt.sign(
-      { sub, email, provider: "apple" },
+      { sub, email, provider: "apple", userId: canonicalUserId },
       JWT_SECRET,
       { expiresIn: "7d" }
     );
-    console.log(`[auth/apple] OK sub=${sub}`);
+    console.log(`[auth/apple] OK sub=${sub} userId=${canonicalUserId}`);
     return res.json({ jwt: token, user });
   } catch (error) {
     console.error("[auth/apple] Error:", error.message);
     return res.status(401).json({ error: "Invalid Apple token" });
+  }
+});
+
+// JWT auth middleware: Authorization: Bearer <token> → req.user, req.userId (canonical: email or provider:sub)
+function requireAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!token) {
+    return res.status(401).json({ error: "Missing or invalid Authorization header" });
+  }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { sub, provider, userId } = decoded;
+    if (!sub || !provider) {
+      return res.status(401).json({ error: "Invalid token payload" });
+    }
+    req.user = decoded;
+    req.userId = userId ?? `${provider}:${sub}`;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid or expired token" });
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Trial (per-account: 3-day trial, 10 generations/day)
+// -----------------------------------------------------------------------------
+function getTodayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+app.get("/api/trial", requireAuth, async (req, res) => {
+  try {
+    let trial = await getTrial(req.userId);
+    if (!trial) {
+      return res.json({ trialStartDate: null, usageToday: { date: getTodayKey(), count: 0 } });
+    }
+    const today = getTodayKey();
+    const count = trial.usageByDate?.[today] ?? 0;
+    return res.json({
+      trialStartDate: trial.trialStartDate,
+      usageToday: { date: today, count },
+    });
+  } catch (e) {
+    console.error("[api/trial] GET error:", e.message);
+    return res.status(500).json({ error: "Failed to get trial status" });
+  }
+});
+
+app.post("/api/trial/start", requireAuth, async (req, res) => {
+  try {
+    const trial = await ensureTrialStart(req.userId);
+    return res.json({ trialStartDate: trial?.trialStartDate ?? new Date().toISOString() });
+  } catch (e) {
+    console.error("[api/trial/start] error:", e.message);
+    return res.status(500).json({ error: "Failed to start trial" });
+  }
+});
+
+app.post("/api/trial/increment", requireAuth, async (req, res) => {
+  try {
+    const today = getTodayKey();
+    const count = await incrementTrialUsage(req.userId, today);
+    return res.json({ date: today, count });
+  } catch (e) {
+    console.error("[api/trial/increment] error:", e.message);
+    return res.status(500).json({ error: "Failed to increment usage" });
   }
 });
 
@@ -376,6 +461,7 @@ app.post("/api/auth/google", async (req, res) => {
     const client = new OAuth2Client(GOOGLE_CLIENT_ID);
     let sub;
     let email = null;
+    let name = null;
     if (idToken && typeof idToken === "string") {
       const ticket = await client.verifyIdToken({
         idToken,
@@ -384,6 +470,7 @@ app.post("/api/auth/google", async (req, res) => {
       const payload = ticket.getPayload();
       sub = payload?.sub;
       email = payload?.email || null;
+      name = payload?.name || null;
     } else if (accessToken && typeof accessToken === "string") {
       const resp = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -394,19 +481,27 @@ app.post("/api/auth/google", async (req, res) => {
       const data = await resp.json();
       sub = data?.id;
       email = data?.email || null;
+      name = data?.name || null;
     } else {
       return res.status(400).json({ error: "Missing idToken or accessToken" });
     }
     if (!sub) {
       return res.status(401).json({ error: "Invalid Google token" });
     }
-    const user = { id: sub, email, provider: "google" };
+    let canonicalUserId = `google:${sub}`;
+    try {
+      const result = await upsertUser({ provider: "google", providerSub: sub, email, name });
+      if (result?.canonicalUserId) canonicalUserId = result.canonicalUserId;
+    } catch (dbErr) {
+      console.warn("[auth/google] DB upsert failed:", dbErr.message);
+    }
+    const user = { id: sub, email, provider: "google", userId: canonicalUserId };
     const token = jwt.sign(
-      { sub, email, provider: "google" },
+      { sub, email, provider: "google", userId: canonicalUserId },
       JWT_SECRET,
       { expiresIn: "7d" }
     );
-    console.log(`[auth/google] OK sub=${sub}`);
+    console.log(`[auth/google] OK sub=${sub} userId=${canonicalUserId}`);
     return res.json({ jwt: token, user });
   } catch (error) {
     console.error("[auth/google] Error:", error.message);
@@ -416,8 +511,15 @@ app.post("/api/auth/google", async (req, res) => {
 
 // Only start HTTP server when not running on Vercel (serverless)
 if (!process.env.VERCEL) {
-  app.listen(port, () => {
+  app.listen(port, async () => {
     console.log(`API running at http://localhost:${port}`);
+    // One account per email: merge existing duplicates, then enforce unique index
+    try {
+      await mergeDuplicateUsersByEmail();
+      await ensureUserIndexes();
+    } catch (e) {
+      console.warn("[startup] User merge/index:", e?.message || e);
+    }
     if (useOpenAI) {
       console.log(`Using OpenAI (model: ${openaiModel}).`);
     } else if (useOllama) {

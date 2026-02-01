@@ -6,18 +6,24 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
-  TextInput,
+  Modal,
+  Pressable,
+  Share,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useRouter, useLocalSearchParams } from "expo-router";
-import { ArrowLeft, Copy, Save, Heart, Bookmark } from "lucide-react-native";
+import { ArrowLeft, Copy, Save, Heart, Bookmark, FileText, Sparkles, Share2 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTheme } from "@/utils/themeStore";
 import { useFavorites } from "@/utils/favoritesStore";
 import { usePresets } from "@/utils/presetsStore";
+import { useToastStore } from "@/utils/toastStore";
+import { useResultNavigationStore } from "@/utils/resultNavigationStore";
 import { remixHook, isValidScriptData } from "@/utils/api";
+import { space, radius, typography } from "@/constants/designTokens";
+import { Button, Card, Chip, Input, EmptyState } from "@/components/ui";
 
 const REMIX_STYLES = [
   { id: "controversial", label: "More controversial", emoji: "🔥" },
@@ -43,10 +49,19 @@ export default function Result() {
   const [remixing, setRemixing] = useState(null);
   const [showPresetModal, setShowPresetModal] = useState(false);
   const [presetName, setPresetName] = useState("");
+  const [collapsed, setCollapsed] = useState({ broll: false, cta: false, caption: false });
 
   useEffect(() => {
     try {
-      const raw = params.scriptData ? JSON.parse(params.scriptData) : null;
+      // When opening from favorites, data may come from store (avoids URL length limits)
+      const fromFavorite = params.from === "favorite";
+      const getAndClearPending = useResultNavigationStore.getState().getAndClearPendingScriptData;
+      let raw = fromFavorite ? getAndClearPending() : null;
+      if (!raw && params.scriptData) {
+        try {
+          raw = JSON.parse(params.scriptData);
+        } catch (_) {}
+      }
       if (!raw || !isValidScriptData(raw)) {
         setParseError(true);
         return;
@@ -56,12 +71,37 @@ export default function Result() {
     } catch {
       setParseError(true);
     }
-  }, [params.scriptData]);
+  }, [params.scriptData, params.from]);
 
-  const copyToClipboard = useCallback(async (text, label) => {
-    await Clipboard.setStringAsync(text);
-    Alert.alert("Copied!", `${label} copied to clipboard`);
-  }, []);
+  const showToast = useToastStore((s) => s.show);
+
+  const shareScript = useCallback(() => {
+    if (!scriptData) return;
+    const parts = [
+      scriptData.topic,
+      "",
+      ...(scriptData.hooks.length ? ["Hooks:", ...scriptData.hooks, ""] : []),
+      ...(scriptData.script.length
+        ? ["Script:", ...scriptData.script.map((s) => s.text), ""]
+        : []),
+      scriptData.broll.length ? ["B-roll:", ...scriptData.broll, ""] : [],
+      scriptData.cta ? ["CTA:", scriptData.cta, ""] : [],
+      scriptData.caption ? ["Caption:", scriptData.caption] : [],
+    ].flat();
+    const message = parts.join("\n");
+    Share.share({
+      message,
+      title: scriptData.topic,
+    }).catch(() => {});
+  }, [scriptData]);
+
+  const copyToClipboard = useCallback(
+    async (text) => {
+      await Clipboard.setStringAsync(text);
+      showToast("Copied!");
+    },
+    [showToast]
+  );
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -78,26 +118,25 @@ export default function Result() {
 
       scripts.unshift(newScript);
       await AsyncStorage.setItem("savedScripts", JSON.stringify(scripts));
-
-      Alert.alert("Saved!", "Script saved to your library");
+      showToast("Saved!");
     } catch (error) {
       console.error("Failed to save:", error);
       Alert.alert("Error", "Failed to save script");
     } finally {
       setSaving(false);
     }
-  }, [scriptData]);
+  }, [scriptData, showToast]);
 
   const handleFavoriteHook = useCallback(async () => {
     if (!scriptData || scriptData.hooks.length === 0) return;
     const hook = scriptData.hooks[Math.min(selectedHook, scriptData.hooks.length - 1)];
     if (!isFavorite(hook)) {
       await addFavorite(hook, scriptData.topic);
-      Alert.alert("Saved!", "Hook added to favorites");
+      showToast("Hook added to favorites");
     } else {
-      Alert.alert("Already saved", "This hook is already in your favorites");
+      showToast("Already in favorites");
     }
-  }, [scriptData, selectedHook, addFavorite, isFavorite]);
+  }, [scriptData, selectedHook, addFavorite, isFavorite, showToast]);
 
   const handleRemixHook = useCallback(
     async (style) => {
@@ -114,7 +153,7 @@ export default function Result() {
           ...prev,
           hooks: prev.hooks.map((h, i) => (i === hookIndex ? data.hook : h)),
         }));
-        Alert.alert("Remixed!", "Your hook has been remixed");
+        showToast("Remixed!");
       } catch (error) {
         console.error(error);
         Alert.alert("Error", "Failed to remix hook");
@@ -122,7 +161,7 @@ export default function Result() {
         setRemixing(null);
       }
     },
-    [scriptData, selectedHook],
+    [scriptData, selectedHook, showToast],
   );
 
   const handleSavePreset = useCallback(async () => {
@@ -140,34 +179,44 @@ export default function Result() {
 
     setShowPresetModal(false);
     setPresetName("");
-    Alert.alert("Saved!", "Brand preset created");
-  }, [presetName, scriptData, savePreset]);
+    showToast("Brand preset created");
+  }, [presetName, scriptData, savePreset, showToast]);
 
   if (parseError) {
     return (
-      <View style={{ flex: 1, backgroundColor: theme.background, justifyContent: "center", alignItems: "center", padding: 24 }}>
+      <View style={{ flex: 1, backgroundColor: theme.background, paddingTop: insets.top }}>
         <StatusBar style={isDark ? "light" : "dark"} />
-        <Text style={{ fontSize: 18, color: theme.text, textAlign: "center", marginBottom: 16 }}>
-          Invalid or missing script data
-        </Text>
-        <TouchableOpacity
-          onPress={() => router.replace("/(tabs)")}
-          style={{ backgroundColor: theme.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}
-        >
-          <Text style={{ fontSize: 16, fontWeight: "600", color: theme.primaryText }}>Go home</Text>
-        </TouchableOpacity>
+        <EmptyState
+          icon={FileText}
+          title="Invalid or missing script data"
+          description="Something went wrong loading this script."
+          actionLabel="Back to Generate"
+          onAction={() => router.replace("/(tabs)")}
+        />
       </View>
     );
   }
 
   if (!scriptData) {
     return (
-      <View style={{ flex: 1, backgroundColor: theme.background, justifyContent: "center", alignItems: "center" }}>
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: theme.background,
+          justifyContent: "center",
+          alignItems: "center",
+          paddingTop: insets.top,
+        }}
+      >
         <StatusBar style={isDark ? "light" : "dark"} />
         <ActivityIndicator size="large" color={theme.primary} />
       </View>
     );
   }
+
+  const toggleCollapsed = (key) => {
+    setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   const safeHookIndex =
     scriptData.hooks.length > 0 ? Math.min(selectedHook, scriptData.hooks.length - 1) : null;
@@ -188,15 +237,21 @@ export default function Result() {
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: 16,
+          paddingHorizontal: space.md,
+          paddingVertical: space.sm,
           borderBottomWidth: 1,
           borderBottomColor: theme.border,
         }}
       >
-        <TouchableOpacity onPress={() => router.back()} style={{ padding: 8 }}>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={{ padding: space.xs }}
+          accessibilityLabel="Back"
+          accessibilityRole="button"
+        >
           <ArrowLeft color={theme.text} size={24} />
         </TouchableOpacity>
-        <View style={{ flexDirection: "row", gap: 8 }}>
+        <View style={{ flexDirection: "row", gap: space.xs, alignItems: "center" }}>
           <TouchableOpacity
             onPress={() => setShowPresetModal(true)}
             style={{
@@ -204,147 +259,126 @@ export default function Result() {
               alignItems: "center",
               gap: 6,
               backgroundColor: theme.cardBg,
-              paddingHorizontal: 12,
-              paddingVertical: 8,
-              borderRadius: 8,
+              paddingHorizontal: space.sm,
+              paddingVertical: space.xs,
+              borderRadius: radius.sm,
               borderWidth: 1,
               borderColor: theme.border,
             }}
+            accessibilityLabel="Save as brand preset"
+            accessibilityRole="button"
           >
             <Bookmark color={theme.text} size={18} />
           </TouchableOpacity>
           <TouchableOpacity
-            onPress={handleSave}
-            disabled={saving}
+            onPress={shareScript}
             style={{
               flexDirection: "row",
               alignItems: "center",
               gap: 6,
-              backgroundColor: theme.primary,
-              paddingHorizontal: 16,
-              paddingVertical: 8,
-              borderRadius: 8,
+              backgroundColor: theme.cardBg,
+              paddingHorizontal: space.sm,
+              paddingVertical: space.xs,
+              borderRadius: radius.sm,
+              borderWidth: 1,
+              borderColor: theme.border,
             }}
+            accessibilityLabel="Share script"
+            accessibilityRole="button"
           >
-            <Save color={theme.primaryText} size={18} />
-            <Text
-              style={{
-                color: theme.primaryText,
-                fontSize: 14,
-                fontWeight: "600",
-              }}
-            >
-              Save
-            </Text>
+            <Share2 color={theme.text} size={18} />
           </TouchableOpacity>
+          <Button
+            onPress={handleSave}
+            disabled={saving}
+            loading={saving}
+            variant="primary"
+            label="Save to Library"
+            icon={Save}
+            size="sm"
+            accessibilityLabel="Save script to library"
+          />
         </View>
       </View>
 
-      {showPresetModal && (
-        <View
+      <Modal
+        visible={showPresetModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPresetModal(false)}
+      >
+        <Pressable
           style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
+            flex: 1,
             backgroundColor: "rgba(0,0,0,0.5)",
             justifyContent: "center",
             alignItems: "center",
-            zIndex: 1000,
+            padding: space.lg,
           }}
+          onPress={() => setShowPresetModal(false)}
         >
-          <View
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
             style={{
-              backgroundColor: theme.cardBg,
-              padding: 24,
-              borderRadius: 16,
-              width: "80%",
+              backgroundColor: theme.background,
+              padding: space.lg,
+              borderRadius: radius.lg,
+              width: "100%",
               maxWidth: 400,
+              borderWidth: 1,
+              borderColor: theme.border,
             }}
           >
             <Text
-              style={{
-                fontSize: 20,
-                fontWeight: "700",
-                color: theme.text,
-                marginBottom: 16,
-              }}
+              style={[typography.heading3, { color: theme.text, marginBottom: space.md }]}
             >
               Save as Brand Preset
             </Text>
-            <TextInput
+            <Input
+              label="Preset name"
               value={presetName}
               onChangeText={setPresetName}
               placeholder="e.g., Fitness Morning Routine"
-              placeholderTextColor={theme.textTertiary}
-              style={{
-                backgroundColor: theme.background,
-                color: theme.text,
-                padding: 12,
-                borderRadius: 8,
-                fontSize: 16,
-                marginBottom: 16,
-                borderWidth: 1,
-                borderColor: theme.border,
-              }}
+              style={{ marginBottom: space.md }}
             />
-            <View style={{ flexDirection: "row", gap: 12 }}>
-              <TouchableOpacity
+            <View style={{ flexDirection: "row", gap: space.sm }}>
+              <Button
                 onPress={() => setShowPresetModal(false)}
-                style={{
-                  flex: 1,
-                  padding: 12,
-                  borderRadius: 8,
-                  backgroundColor: theme.background,
-                  alignItems: "center",
-                }}
-              >
-                <Text
-                  style={{ color: theme.text, fontSize: 14, fontWeight: "600" }}
-                >
-                  Cancel
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
+                variant="secondary"
+                label="Cancel"
+                style={{ flex: 1 }}
+              />
+              <Button
                 onPress={handleSavePreset}
                 disabled={!presetName.trim()}
-                style={{
-                  flex: 1,
-                  padding: 12,
-                  borderRadius: 8,
-                  backgroundColor: presetName.trim()
-                    ? theme.primary
-                    : theme.backgroundSecondary,
-                  alignItems: "center",
-                }}
-              >
-                <Text
-                  style={{
-                    color: presetName.trim()
-                      ? theme.primaryText
-                      : theme.textTertiary,
-                    fontSize: 14,
-                    fontWeight: "600",
-                  }}
-                >
-                  Save
-                </Text>
-              </TouchableOpacity>
+                variant="primary"
+                label="Save"
+                style={{ flex: 1 }}
+              />
             </View>
-          </View>
-        </View>
-      )}
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{
-          padding: 24,
+          padding: space.lg,
           paddingBottom: insets.bottom + 80,
         }}
         showsVerticalScrollIndicator={false}
       >
-        <View style={{ gap: 24 }}>
+        <View style={{ gap: space.lg }}>
+          {/* Topic */}
+          <Text
+            style={[typography.caption, { color: theme.textSecondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: space.xxs }]}
+          >
+            Topic
+          </Text>
+          <Text style={[typography.heading3, { color: theme.text }]}>
+            {scriptData.topic}
+          </Text>
+
           {/* Hooks */}
           <View>
             <View
@@ -352,161 +386,106 @@ export default function Result() {
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
-                marginBottom: 12,
+                marginBottom: space.sm,
               }}
             >
-              <Text
-                style={{ fontSize: 18, fontWeight: "700", color: theme.text }}
-              >
+              <Text style={[typography.heading3, { color: theme.text }]}>
                 Hooks
               </Text>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                {scriptData.hooks.length > 0 && (
-                  <>
-                    <TouchableOpacity
-                      onPress={handleFavoriteHook}
-                      style={{ padding: 8 }}
-                    >
-                      <Heart
-                        color={
-                          currentHook && isFavorite(currentHook)
-                            ? theme.accent
-                            : theme.textSecondary
-                        }
-                        fill={
-                          currentHook && isFavorite(currentHook)
-                            ? theme.accent
-                            : "none"
-                        }
-                        size={18}
-                      />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() =>
-                        currentHook && copyToClipboard(currentHook, "Hook")
+              {scriptData.hooks.length > 0 && (
+                <View style={{ flexDirection: "row", gap: space.xs }}>
+                  <TouchableOpacity
+                    onPress={handleFavoriteHook}
+                    style={{ padding: space.xs }}
+                    accessibilityLabel={currentHook && isFavorite(currentHook) ? "Remove from favorites" : "Add hook to favorites"}
+                    accessibilityRole="button"
+                  >
+                    <Heart
+                      color={
+                        currentHook && isFavorite(currentHook)
+                          ? theme.accent
+                          : theme.textSecondary
                       }
-                      style={{ padding: 8 }}
-                    >
-                      <Copy color={theme.textSecondary} size={18} />
-                    </TouchableOpacity>
-                  </>
-                )}
-              </View>
+                      fill={
+                        currentHook && isFavorite(currentHook)
+                          ? theme.accent
+                          : "none"
+                      }
+                      size={20}
+                    />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => currentHook && copyToClipboard(currentHook)}
+                    style={{ padding: space.xs }}
+                    accessibilityLabel="Copy hook"
+                    accessibilityRole="button"
+                  >
+                    <Copy color={theme.textSecondary} size={20} />
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
 
             {scriptData.hooks.length === 0 ? (
-              <View
-                style={{
-                  backgroundColor: theme.cardBg,
-                  padding: 16,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor: theme.border,
-                }}
-              >
-                <Text style={{ fontSize: 14, color: theme.textSecondary }}>
+              <Card padding="md" bordered>
+                <Text style={[typography.bodySmall, { color: theme.textSecondary }]}>
                   No hooks
                 </Text>
-              </View>
+              </Card>
             ) : (
               <>
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
-                  style={{ marginBottom: 12 }}
+                  style={{ marginBottom: space.sm }}
                 >
-                  <View style={{ flexDirection: "row", gap: 8 }}>
+                  <View style={{ flexDirection: "row", gap: space.xs }}>
                     {scriptData.hooks.map((_, index) => (
-                      <TouchableOpacity
+                      <Chip
                         key={index}
+                        label={String(index + 1)}
+                        selected={selectedHook === index}
                         onPress={() => setSelectedHook(index)}
-                        style={{
-                          paddingHorizontal: 16,
-                          paddingVertical: 8,
-                          borderRadius: 20,
-                          backgroundColor:
-                            selectedHook === index ? theme.primary : theme.cardBg,
-                          borderWidth: 1,
-                          borderColor:
-                            selectedHook === index ? theme.primary : theme.border,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            fontSize: 14,
-                            fontWeight: "600",
-                            color:
-                              selectedHook === index
-                                ? theme.primaryText
-                                : theme.textSecondary,
-                          }}
-                        >
-                          {index + 1}
-                        </Text>
-                      </TouchableOpacity>
+                        accessibilityLabel={`Hook ${index + 1}. ${selectedHook === index ? "Selected" : "Not selected"}`}
+                        accessibilityState={{ selected: selectedHook === index }}
+                      />
                     ))}
                   </View>
                 </ScrollView>
 
-                <View
-                  style={{
-                    backgroundColor: theme.cardBg,
-                    padding: 16,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: theme.border,
-                  }}
-                >
-                  <Text style={{ fontSize: 16, color: theme.text, lineHeight: 24 }}>
+                <Card padding="md" bordered>
+                  <Text style={[typography.body, { color: theme.text, lineHeight: 24, fontSize: 17 }]}>
                     {currentHook ?? ""}
                   </Text>
-                </View>
+                </Card>
               </>
             )}
 
-            {/* Remix Buttons - only when there are hooks */}
             {scriptData.hooks.length > 0 && (
-              <View style={{ marginTop: 16 }}>
+              <View style={{ marginTop: space.md }}>
                 <Text
-                  style={{
-                    fontSize: 14,
-                    fontWeight: "600",
-                    color: theme.textSecondary,
-                    marginBottom: 10,
-                  }}
+                  style={[typography.label, { color: theme.textSecondary, marginBottom: space.xs }]}
                 >
                   Remix this hook:
                 </Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={{ flexDirection: "row", gap: 8 }}>
+                  <View style={{ flexDirection: "row", gap: space.xs }}>
                     {REMIX_STYLES.map((style) => (
-                      <TouchableOpacity
+                      <Chip
                         key={style.id}
+                        label={style.label}
+                        leftIcon={
+                          remixing === style.id ? (
+                            <ActivityIndicator size="small" color={theme.text} />
+                          ) : (
+                            <Text style={{ fontSize: 14 }}>{style.emoji}</Text>
+                          )
+                        }
+                        selected={false}
                         onPress={() => handleRemixHook(style.id)}
                         disabled={remixing !== null}
-                        style={{
-                          backgroundColor: theme.cardBg,
-                          paddingHorizontal: 14,
-                          paddingVertical: 8,
-                          borderRadius: 20,
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: 6,
-                          borderWidth: 1,
-                          borderColor: theme.border,
-                        }}
-                      >
-                        {remixing === style.id ? (
-                          <ActivityIndicator size="small" color={theme.text} />
-                        ) : (
-                          <>
-                            <Text style={{ fontSize: 14 }}>{style.emoji}</Text>
-                            <Text style={{ fontSize: 13, color: theme.text }}>
-                              {style.label}
-                            </Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
+                        style={remixing === style.id ? { opacity: 0.9 } : undefined}
+                      />
                     ))}
                   </View>
                 </ScrollView>
@@ -521,210 +500,217 @@ export default function Result() {
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
-                marginBottom: 12,
+                marginBottom: space.sm,
               }}
             >
-              <Text
-                style={{ fontSize: 18, fontWeight: "700", color: theme.text }}
-              >
+              <Text style={[typography.heading3, { color: theme.text }]}>
                 Script
               </Text>
               {scriptData.script.length > 0 && (
                 <TouchableOpacity
                   onPress={() =>
                     copyToClipboard(
-                      scriptData.script.map((s) => s.text).join("\n\n"),
-                      "Script",
+                      scriptData.script.map((s) => s.text).join("\n\n")
                     )
                   }
-                  style={{ padding: 8 }}
+                  style={{ padding: space.xs }}
+                  accessibilityLabel="Copy full script"
+                  accessibilityRole="button"
                 >
-                  <Copy color={theme.textSecondary} size={18} />
+                  <Copy color={theme.textSecondary} size={20} />
                 </TouchableOpacity>
               )}
             </View>
-            <View style={{ gap: 12 }}>
+            <View style={{ gap: space.sm }}>
               {scriptData.script.length === 0 ? (
-                <View
-                  style={{
-                    backgroundColor: theme.cardBg,
-                    padding: 16,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: theme.border,
-                  }}
-                >
-                  <Text style={{ fontSize: 14, color: theme.textSecondary }}>
+                <Card padding="md" bordered>
+                  <Text style={[typography.bodySmall, { color: theme.textSecondary }]}>
                     No script
                   </Text>
-                </View>
+                </Card>
               ) : (
-              scriptData.script.map((scene, index) => (
-                <View
-                  key={index}
-                  style={{
-                    backgroundColor: theme.cardBg,
-                    padding: 16,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: theme.border,
-                  }}
-                >
-                  <Text
-                    style={{
-                      fontSize: 12,
-                      color: theme.textSecondary,
-                      marginBottom: 8,
-                    }}
-                  >
-                    Scene {index + 1}
-                  </Text>
-                  <Text
-                    style={{ fontSize: 16, color: theme.text, lineHeight: 24 }}
-                  >
-                    {scene.text}
-                  </Text>
-                  {scene.onScreenText && (
+                scriptData.script.map((scene, index) => (
+                  <Card key={index} padding="md" bordered>
                     <View
                       style={{
-                        marginTop: 12,
-                        paddingTop: 12,
-                        borderTopWidth: 1,
-                        borderTopColor: theme.border,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: space.xs,
                       }}
                     >
-                      <Text
-                        style={{
-                          fontSize: 12,
-                          color: theme.textSecondary,
-                          marginBottom: 4,
-                        }}
-                      >
-                        On-screen:
+                      <Text style={[typography.caption, { color: theme.textSecondary }]}>
+                        Scene {index + 1}
                       </Text>
-                      <Text
-                        style={{
-                          fontSize: 14,
-                          color: theme.accent,
-                          fontWeight: "600",
-                        }}
+                      <TouchableOpacity
+                        onPress={() => copyToClipboard(scene.text)}
+                        style={{ padding: space.xxs }}
+                        accessibilityLabel={`Copy scene ${index + 1}`}
+                        accessibilityRole="button"
                       >
-                        {scene.onScreenText}
-                      </Text>
+                        <Copy color={theme.textSecondary} size={16} />
+                      </TouchableOpacity>
                     </View>
-                  )}
-                </View>
-              ))
-            )}
+                    <Text style={[typography.body, { color: theme.text, lineHeight: 24 }]}>
+                      {scene.text}
+                    </Text>
+                    {scene.onScreenText && (
+                      <View
+                        style={{
+                          marginTop: space.sm,
+                          paddingTop: space.sm,
+                          borderTopWidth: 1,
+                          borderTopColor: theme.border,
+                        }}
+                      >
+                        <Text style={[typography.caption, { color: theme.textSecondary, marginBottom: space.xxs }]}>
+                          On-screen:
+                        </Text>
+                        <Text style={[typography.bodySmall, { color: theme.accent, fontWeight: "600" }]}>
+                          {scene.onScreenText}
+                        </Text>
+                      </View>
+                    )}
+                  </Card>
+                ))
+              )}
             </View>
           </View>
 
-          {/* B-roll */}
+          {/* B-roll (collapsible) */}
           <View>
-            <Text
-              style={{
-                fontSize: 18,
-                fontWeight: "700",
-                color: theme.text,
-                marginBottom: 12,
-              }}
-            >
-              B-roll Ideas
-            </Text>
-            <View
-              style={{
-                backgroundColor: theme.cardBg,
-                padding: 16,
-                borderRadius: 12,
-                gap: 8,
-                borderWidth: 1,
-                borderColor: theme.border,
-              }}
-            >
-              {scriptData.broll.map((item, index) => (
-                <Text
-                  key={index}
-                  style={{ fontSize: 14, color: theme.text, lineHeight: 20 }}
-                >
-                  • {item}
-                </Text>
-              ))}
-            </View>
-          </View>
-
-          {/* CTA */}
-          <View>
-            <View
+            <Pressable
+              onPress={() => toggleCollapsed("broll")}
               style={{
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
-                marginBottom: 12,
+                marginBottom: collapsed.broll ? 0 : space.sm,
               }}
+              accessibilityLabel={collapsed.broll ? "Expand B-roll ideas" : "Collapse B-roll ideas"}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: !collapsed.broll }}
             >
-              <Text
-                style={{ fontSize: 18, fontWeight: "700", color: theme.text }}
-              >
+              <Text style={[typography.heading3, { color: theme.text }]}>
+                B-roll Ideas
+              </Text>
+              <Text style={[typography.bodySmall, { color: theme.textSecondary }]}>
+                {collapsed.broll ? "Show" : "Hide"}
+              </Text>
+            </Pressable>
+            {!collapsed.broll && (
+              <Card padding="md" bordered>
+                <View style={{ flexDirection: "row", justifyContent: "flex-end", marginBottom: space.xs }}>
+                  <TouchableOpacity
+                    onPress={() => copyToClipboard(scriptData.broll.join("\n"))}
+                    style={{ padding: space.xxs }}
+                    accessibilityLabel="Copy B-roll ideas"
+                    accessibilityRole="button"
+                  >
+                    <Copy color={theme.textSecondary} size={16} />
+                  </TouchableOpacity>
+                </View>
+                <View style={{ gap: space.xs }}>
+                  {scriptData.broll.map((item, index) => (
+                    <Text key={index} style={[typography.bodySmall, { color: theme.text, lineHeight: 20 }]}>
+                      • {item}
+                    </Text>
+                  ))}
+                </View>
+              </Card>
+            )}
+          </View>
+
+          {/* CTA (collapsible) */}
+          <View>
+            <Pressable
+              onPress={() => toggleCollapsed("cta")}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: collapsed.cta ? 0 : space.sm,
+              }}
+              accessibilityLabel={collapsed.cta ? "Expand call to action" : "Collapse call to action"}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: !collapsed.cta }}
+            >
+              <Text style={[typography.heading3, { color: theme.text }]}>
                 Call to Action
               </Text>
-              <TouchableOpacity
-                onPress={() => copyToClipboard(scriptData.cta, "CTA")}
-                style={{ padding: 8 }}
-              >
-                <Copy color={theme.textSecondary} size={18} />
-              </TouchableOpacity>
-            </View>
-            <View
-              style={{
-                backgroundColor: theme.cardBg,
-                padding: 16,
-                borderRadius: 12,
-                borderWidth: 1,
-                borderColor: theme.border,
-              }}
-            >
-              <Text style={{ fontSize: 16, color: theme.text, lineHeight: 24 }}>
-                {scriptData.cta}
+              <Text style={[typography.bodySmall, { color: theme.textSecondary }]}>
+                {collapsed.cta ? "Show" : "Hide"}
               </Text>
-            </View>
+            </Pressable>
+            {!collapsed.cta && (
+              <Card padding="md" bordered>
+                <View style={{ flexDirection: "row", justifyContent: "flex-end", marginBottom: space.xs }}>
+                  <TouchableOpacity
+                    onPress={() => copyToClipboard(scriptData.cta)}
+                    style={{ padding: space.xxs }}
+                    accessibilityLabel="Copy call to action"
+                    accessibilityRole="button"
+                  >
+                    <Copy color={theme.textSecondary} size={16} />
+                  </TouchableOpacity>
+                </View>
+                <Text style={[typography.body, { color: theme.text, lineHeight: 24 }]}>
+                  {scriptData.cta}
+                </Text>
+              </Card>
+            )}
           </View>
 
-          {/* Caption */}
+          {/* Caption (collapsible) */}
           <View>
-            <View
+            <Pressable
+              onPress={() => toggleCollapsed("caption")}
               style={{
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
-                marginBottom: 12,
+                marginBottom: collapsed.caption ? 0 : space.sm,
               }}
+              accessibilityLabel={collapsed.caption ? "Expand caption" : "Collapse caption"}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: !collapsed.caption }}
             >
-              <Text
-                style={{ fontSize: 18, fontWeight: "700", color: theme.text }}
-              >
+              <Text style={[typography.heading3, { color: theme.text }]}>
                 Caption
               </Text>
-              <TouchableOpacity
-                onPress={() => copyToClipboard(scriptData.caption, "Caption")}
-                style={{ padding: 8 }}
-              >
-                <Copy color={theme.textSecondary} size={18} />
-              </TouchableOpacity>
-            </View>
-            <View
-              style={{
-                backgroundColor: theme.cardBg,
-                padding: 16,
-                borderRadius: 12,
-                borderWidth: 1,
-                borderColor: theme.border,
-              }}
-            >
-              <Text style={{ fontSize: 14, color: theme.text, lineHeight: 22 }}>
-                {scriptData.caption}
+              <Text style={[typography.bodySmall, { color: theme.textSecondary }]}>
+                {collapsed.caption ? "Show" : "Hide"}
               </Text>
-            </View>
+            </Pressable>
+            {!collapsed.caption && (
+              <Card padding="md" bordered>
+                <View style={{ flexDirection: "row", justifyContent: "flex-end", marginBottom: space.xs }}>
+                  <TouchableOpacity
+                    onPress={() => copyToClipboard(scriptData.caption)}
+                    style={{ padding: space.xxs }}
+                    accessibilityLabel="Copy caption"
+                    accessibilityRole="button"
+                  >
+                    <Copy color={theme.textSecondary} size={16} />
+                  </TouchableOpacity>
+                </View>
+                <Text style={[typography.bodySmall, { color: theme.text, lineHeight: 22 }]}>
+                  {scriptData.caption}
+                </Text>
+              </Card>
+            )}
           </View>
+
+          {/* New script CTA */}
+          <Button
+            onPress={() => router.replace("/(tabs)")}
+            variant="secondary"
+            label="New script"
+            icon={Sparkles}
+            fullWidth
+            style={{ marginTop: space.md }}
+            accessibilityLabel="Create a new script"
+          />
         </View>
       </ScrollView>
     </View>

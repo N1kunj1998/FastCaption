@@ -1,16 +1,18 @@
 import { Platform } from "react-native";
+import Constants from "expo-constants";
 
 /**
- * Returns the base URL for API requests.
+ * Returns the base URL for script/auth API requests.
  * - On web: empty string so relative URLs work when served from the same origin as your API.
- * - On native (iOS/Android): use EXPO_PUBLIC_API_URL or EXPO_PUBLIC_BASE_URL to call your backend.
+ * - On native: from app.config.js extra.apiUrl (loaded from .env) or EXPO_PUBLIC_API_URL.
  */
 export function getApiBaseUrl() {
   if (Platform.OS === "web") {
     return "";
   }
-  const base =
-    process.env.EXPO_PUBLIC_API_URL || process.env.EXPO_PUBLIC_BASE_URL || "";
+  const fromExtra = Constants.expoConfig?.extra?.apiUrl;
+  const fromEnv = process.env.EXPO_PUBLIC_API_URL || "";
+  const base = (typeof fromExtra === "string" ? fromExtra : fromEnv) || "";
   return base.replace(/\/$/, "");
 }
 
@@ -77,17 +79,30 @@ export async function generateScript(payload) {
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    const msg = e?.message || String(e);
-    if (msg.includes("fetch") || msg.includes("connect") || msg.includes("network")) {
+    const msg = (e?.message || String(e)).toLowerCase();
+    const isNetworkError =
+      msg.includes("fetch") ||
+      msg.includes("connect") ||
+      msg.includes("network") ||
+      msg.includes("failed") ||
+      msg.includes("could not");
+    if (isNetworkError) {
       throw new Error(
-        `Could not reach the server at ${url}. On a physical device, use a deployed API URL (e.g. https://fast-caption.vercel.app) in .env and rebuild the app.`
+        `Could not connect. API: ${url}. Set EXPO_PUBLIC_API_URL in apps/mobile/.env and do a clean rebuild (see README).`
       );
     }
     throw e;
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || "Failed to generate script");
+    const body = await res.text();
+    let errMsg = `Server error (${res.status})`;
+    try {
+      const err = JSON.parse(body);
+      if (err?.error) errMsg = err.error;
+    } catch (_) {
+      if (body && body.length < 200) errMsg = body;
+    }
+    throw new Error(errMsg);
   }
   return res.json();
 }
@@ -118,23 +133,45 @@ export async function remixHook(payload) {
 /**
  * Sign in with Apple: exchange identityToken for app JWT + user.
  * @param {string} identityToken - From AppleAuthentication.signInAsync()
+ * @param {string | null} [name] - User's full name from credential.fullName (Apple only sends name in credential, not in JWT)
  * @returns {Promise<{ jwt: string, user: { id: string, email?: string, provider: string } }>}
  */
-export async function authWithApple(identityToken) {
+export async function authWithApple(identityToken, name = null) {
   const url = getApiUrl("/api/auth/apple");
+  const baseUrl = getApiBaseUrl();
+  console.log("[FastCaption Auth] API base URL:", baseUrl || "(none - set EXPO_PUBLIC_API_URL in .env)");
+  console.log("[FastCaption Auth] POST /api/auth/apple →", url);
   if (useMockApi()) {
+    console.warn("[FastCaption Auth] useMockApi is true, backend not configured");
     throw new Error(BACKEND_REQUIRED_MSG);
   }
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ identityToken }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || "Apple sign-in failed");
+  const body = { identityToken };
+  if (name) body.name = name;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    console.error("[FastCaption Auth] Apple sign-in fetch failed:", e?.message ?? e, "| URL:", url);
+    throw e;
   }
-  return res.json();
+  console.log("[FastCaption Auth] Apple response status:", res.status, res.ok ? "OK" : "error");
+  if (!res.ok) {
+    const body = await res.text();
+    let errMsg = "Apple sign-in failed";
+    try {
+      const err = JSON.parse(body);
+      if (err?.error) errMsg = err.error;
+    } catch (_) {}
+    console.error("[FastCaption Auth] Apple sign-in error:", res.status, body?.slice(0, 200));
+    throw new Error(errMsg);
+  }
+  const data = await res.json();
+  console.log("[FastCaption Auth] Apple sign-in success, user id:", data?.user?.id);
+  return data;
 }
 
 /**
@@ -144,17 +181,92 @@ export async function authWithApple(identityToken) {
  */
 export async function authWithGoogle(tokens) {
   const url = getApiUrl("/api/auth/google");
+  const baseUrl = getApiBaseUrl();
+  console.log("[FastCaption Auth] API base URL:", baseUrl || "(none - set EXPO_PUBLIC_API_URL in .env)");
+  console.log("[FastCaption Auth] POST /api/auth/google →", url);
   if (useMockApi()) {
+    console.warn("[FastCaption Auth] useMockApi is true, backend not configured");
     throw new Error(BACKEND_REQUIRED_MSG);
   }
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(tokens),
+    });
+  } catch (e) {
+    console.error("[FastCaption Auth] Google sign-in fetch failed:", e?.message ?? e, "| URL:", url);
+    throw e;
+  }
+  console.log("[FastCaption Auth] Google response status:", res.status, res.ok ? "OK" : "error");
+  if (!res.ok) {
+    const body = await res.text();
+    let errMsg = "Google sign-in failed";
+    try {
+      const err = JSON.parse(body);
+      if (err?.error) errMsg = err.error;
+    } catch (_) {}
+    console.error("[FastCaption Auth] Google sign-in error:", res.status, body?.slice(0, 200));
+    throw new Error(errMsg);
+  }
+  const data = await res.json();
+  console.log("[FastCaption Auth] Google sign-in success, user id:", data?.user?.id);
+  return data;
+}
+
+/**
+ * Get trial status for the current user (one trial per account).
+ * @param {string} jwt - App JWT from auth
+ * @returns {Promise<{ trialStartDate: string | null, usageToday: { date: string, count: number } }>}
+ */
+export async function getTrialStatus(jwt) {
+  const url = getApiUrl("/api/trial");
   const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(tokens),
+    method: "GET",
+    headers: { Authorization: `Bearer ${jwt}` },
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || "Google sign-in failed");
+    throw new Error(err.error || "Failed to get trial status");
+  }
+  return res.json();
+}
+
+/**
+ * Start trial for the current user (idempotent; only sets if not already started).
+ * @param {string} jwt - App JWT from auth
+ * @returns {Promise<{ trialStartDate: string }>}
+ */
+export async function startTrial(jwt) {
+  const url = getApiUrl("/api/trial/start");
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to start trial");
+  }
+  return res.json();
+}
+
+/**
+ * Increment generation count for today (per-account).
+ * @param {string} jwt - App JWT from auth
+ * @returns {Promise<{ date: string, count: number }>}
+ */
+export async function incrementTrialUsageApi(jwt) {
+  const url = getApiUrl("/api/trial/increment");
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to record usage");
   }
   return res.json();
 }

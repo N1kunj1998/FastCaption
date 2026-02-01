@@ -1,19 +1,25 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   View,
   Text,
   TouchableOpacity,
   ScrollView,
   Alert,
+  Pressable,
+  TextInput,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { FileText, Trash2, Heart } from "lucide-react-native";
+import { FileText, Trash2, Heart, Search } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTheme } from "@/utils/themeStore";
 import { useFavorites } from "@/utils/favoritesStore";
+import { useResultNavigationStore } from "@/utils/resultNavigationStore";
 import { isValidScriptData } from "@/utils/api";
+import { space, radius, typography } from "@/constants/designTokens";
+import { LOTTIE_EMPTY_STATE } from "@/constants/lottie";
+import { Card, EmptyState } from "@/components/ui";
 
 export default function Library() {
   const insets = useSafeAreaInsets();
@@ -22,6 +28,8 @@ export default function Library() {
   const { favorites, loadFavorites, removeFavorite } = useFavorites();
   const [savedScripts, setSavedScripts] = useState([]);
   const [activeTab, setActiveTab] = useState("scripts");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortNewestFirst, setSortNewestFirst] = useState(true);
 
   useEffect(() => {
     loadScripts();
@@ -32,12 +40,29 @@ export default function Library() {
     try {
       const scripts = await AsyncStorage.getItem("savedScripts");
       if (scripts) {
-        setSavedScripts(JSON.parse(scripts));
+        const parsed = JSON.parse(scripts);
+        setSavedScripts(parsed);
+      } else {
+        setSavedScripts([]);
       }
     } catch (error) {
       console.error("Failed to load scripts:", error);
     }
   }
+
+  const filteredAndSortedScripts = useMemo(() => {
+    let list = [...savedScripts];
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      list = list.filter((s) => (s.topic || "").toLowerCase().includes(q));
+    }
+    list.sort((a, b) => {
+      const da = new Date(a.createdAt || 0).getTime();
+      const db = new Date(b.createdAt || 0).getTime();
+      return sortNewestFirst ? db - da : da - db;
+    });
+    return list;
+  }, [savedScripts, searchQuery, sortNewestFirst]);
 
   async function deleteScript(id) {
     const updated = savedScripts.filter((s) => s.id !== id);
@@ -85,206 +110,252 @@ export default function Library() {
     >
       <StatusBar style={isDark ? "light" : "dark"} />
 
-      <View style={{ padding: 24, paddingBottom: 16 }}>
+      <View style={{ paddingHorizontal: space.lg, paddingBottom: space.md }}>
         <Text
-          style={{
-            fontSize: 28,
-            fontWeight: "700",
-            color: theme.text,
-            marginBottom: 8,
-          }}
+          style={[typography.heading1, { color: theme.text, marginBottom: space.xs }]}
         >
           Library
         </Text>
-        <Text style={{ fontSize: 16, color: theme.textSecondary }}>
+        <Text style={[typography.body, { color: theme.textSecondary }]}>
           {activeTab === "scripts"
             ? `${savedScripts.length} saved ${savedScripts.length === 1 ? "script" : "scripts"}`
             : `${favorites.length} favorite ${favorites.length === 1 ? "hook" : "hooks"}`}
         </Text>
       </View>
 
-      <View style={{ paddingHorizontal: 24, marginBottom: 16 }}>
+      {/* Search & sort (scripts tab only) */}
+      {activeTab === "scripts" && savedScripts.length > 0 && (
+        <View style={{ paddingHorizontal: space.lg, marginBottom: space.sm }}>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.xs,
+              backgroundColor: theme.cardBg,
+              borderRadius: radius.sm,
+              paddingHorizontal: space.sm,
+              paddingVertical: space.xs,
+              borderWidth: 1,
+              borderColor: theme.border,
+            }}
+          >
+            <Search color={theme.textTertiary} size={18} />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search scripts..."
+              placeholderTextColor={theme.textTertiary}
+              style={[typography.bodySmall, { flex: 1, color: theme.text, paddingVertical: space.xs }]}
+            />
+          </View>
+          <Pressable
+            onPress={() => setSortNewestFirst((v) => !v)}
+            style={{ marginTop: space.xs, alignSelf: "flex-end" }}
+          >
+            <Text style={[typography.caption, { color: theme.primary }]}>
+              Sort: {sortNewestFirst ? "Newest first" : "Oldest first"}
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
+      {/* Tabs */}
+      <View style={{ paddingHorizontal: space.lg, marginBottom: space.md }}>
         <View
           style={{
             flexDirection: "row",
             backgroundColor: theme.cardBg,
-            borderRadius: 10,
-            padding: 4,
+            borderRadius: radius.sm,
+            padding: space.xxs,
             borderWidth: 1,
             borderColor: theme.border,
           }}
         >
-          <TouchableOpacity
+          <Pressable
             onPress={() => setActiveTab("scripts")}
             style={{
               flex: 1,
-              paddingVertical: 10,
-              borderRadius: 8,
+              paddingVertical: space.sm,
+              borderRadius: radius.sm,
               backgroundColor:
                 activeTab === "scripts" ? theme.primary : "transparent",
             }}
+            accessibilityRole="tab"
+            accessibilityLabel="Scripts tab"
+            accessibilityState={{ selected: activeTab === "scripts" }}
           >
             <Text
-              style={{
-                textAlign: "center",
-                fontSize: 14,
-                fontWeight: "600",
-                color:
-                  activeTab === "scripts"
-                    ? theme.primaryText
-                    : theme.textSecondary,
-              }}
+              style={[
+                typography.label,
+                {
+                  textAlign: "center",
+                  color:
+                    activeTab === "scripts"
+                      ? theme.primaryText
+                      : theme.textSecondary,
+                },
+              ]}
             >
               Scripts
             </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
+          </Pressable>
+          <Pressable
             onPress={() => setActiveTab("favorites")}
             style={{
               flex: 1,
-              paddingVertical: 10,
-              borderRadius: 8,
+              paddingVertical: space.sm,
+              borderRadius: radius.sm,
               backgroundColor:
                 activeTab === "favorites" ? theme.primary : "transparent",
             }}
+            accessibilityRole="tab"
+            accessibilityLabel="Favorites tab"
+            accessibilityState={{ selected: activeTab === "favorites" }}
           >
             <Text
-              style={{
-                textAlign: "center",
-                fontSize: 14,
-                fontWeight: "600",
-                color:
-                  activeTab === "favorites"
-                    ? theme.primaryText
-                    : theme.textSecondary,
-              }}
+              style={[
+                typography.label,
+                {
+                  textAlign: "center",
+                  color:
+                    activeTab === "favorites"
+                      ? theme.primaryText
+                      : theme.textSecondary,
+                },
+              ]}
             >
               Favorites
             </Text>
-          </TouchableOpacity>
+          </Pressable>
         </View>
       </View>
 
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{
-          padding: 24,
-          paddingTop: 8,
+          paddingHorizontal: space.lg,
+          paddingTop: space.xs,
           paddingBottom: insets.bottom + 80,
         }}
         showsVerticalScrollIndicator={false}
       >
         {activeTab === "scripts" ? (
           savedScripts.length === 0 ? (
-            <View style={{ alignItems: "center", paddingTop: 60 }}>
-              <FileText color={theme.textTertiary} size={48} />
-              <Text
-                style={{
-                  fontSize: 16,
-                  color: theme.textSecondary,
-                  marginTop: 16,
-                  textAlign: "center",
-                }}
-              >
-                No saved scripts yet{"\n"}Generate your first script to get
-                started
-              </Text>
-            </View>
+            <EmptyState
+              icon={FileText}
+              lottieSource={LOTTIE_EMPTY_STATE}
+              title="No scripts yet"
+              description="Generate your first script to get started."
+              actionLabel="Generate script"
+              onAction={() => router.push("/(tabs)")}
+            />
+          ) : filteredAndSortedScripts.length === 0 ? (
+            <EmptyState
+              icon={Search}
+              title="No matching scripts"
+              description="Try a different search term."
+            />
           ) : (
-            <View style={{ gap: 12 }}>
-              {savedScripts.map((script) => (
-                <View
-                  key={script.id}
-                  style={{
-                    backgroundColor: theme.cardBg,
-                    borderRadius: 12,
-                    padding: 16,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 12,
-                    borderWidth: 1,
-                    borderColor: theme.border,
-                  }}
-                >
-                  <TouchableOpacity
-                    onPress={() => openScript(script)}
-                    style={{ flex: 1 }}
+            <View style={{ gap: space.sm }}>
+              {filteredAndSortedScripts.map((script) => (
+                <Card key={script.id} padding="md" bordered>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: space.sm,
+                    }}
                   >
-                    <Text
-                      style={{
-                        fontSize: 16,
-                        fontWeight: "600",
-                        color: theme.text,
-                        marginBottom: 4,
-                      }}
+                    <Pressable
+                      onPress={() => openScript(script)}
+                      onLongPress={() => confirmDeleteScript(script)}
+                      style={{ flex: 1 }}
+                      accessibilityLabel={`Open script: ${script.topic}`}
+                      accessibilityRole="button"
+                      accessibilityHint="Long press to delete"
                     >
-                      {script.topic}
-                    </Text>
-                    <Text style={{ fontSize: 14, color: theme.textSecondary }}>
-                      {new Date(script.createdAt).toLocaleDateString()}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    onPress={() => confirmDeleteScript(script)}
-                    style={{ padding: 8 }}
-                  >
-                    <Trash2 color={theme.textSecondary} size={20} />
-                  </TouchableOpacity>
-                </View>
+                      <Text
+                        style={[typography.label, { color: theme.text, marginBottom: space.xxs }]}
+                      >
+                        {script.topic}
+                      </Text>
+                      <Text style={[typography.caption, { color: theme.textSecondary }]}>
+                        {new Date(script.createdAt).toLocaleDateString()}
+                      </Text>
+                    </Pressable>
+                    <TouchableOpacity
+                      onPress={() => confirmDeleteScript(script)}
+                      style={{ padding: space.xs }}
+                      accessibilityLabel="Delete script"
+                      accessibilityRole="button"
+                    >
+                      <Trash2 color={theme.textSecondary} size={20} />
+                    </TouchableOpacity>
+                  </View>
+                </Card>
               ))}
             </View>
           )
         ) : favorites.length === 0 ? (
-          <View style={{ alignItems: "center", paddingTop: 60 }}>
-            <Heart color={theme.textTertiary} size={48} />
-            <Text
-              style={{
-                fontSize: 16,
-                color: theme.textSecondary,
-                marginTop: 16,
-                textAlign: "center",
-              }}
-            >
-              No favorite hooks yet{"\n"}Save hooks from your results
-            </Text>
-          </View>
+          <EmptyState
+            icon={Heart}
+            lottieSource={LOTTIE_EMPTY_STATE}
+            title="No favorite hooks yet"
+            description="Save hooks from your results to see them here."
+            actionLabel="Generate script"
+            onAction={() => router.push("/(tabs)")}
+          />
         ) : (
-          <View style={{ gap: 12 }}>
+          <View style={{ gap: space.sm }}>
             {favorites.map((fav) => (
-              <View
-                key={fav.id}
-                style={{
-                  backgroundColor: theme.cardBg,
-                  borderRadius: 12,
-                  padding: 16,
-                  borderWidth: 1,
-                  borderColor: theme.border,
-                }}
-              >
+              <Card key={fav.id} padding="md" bordered>
                 <View
                   style={{
                     flexDirection: "row",
                     justifyContent: "space-between",
-                    marginBottom: 8,
+                    marginBottom: space.xs,
                   }}
                 >
-                  <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                  <Text style={[typography.caption, { color: theme.textSecondary }]}>
                     {fav.topic}
                   </Text>
                   <TouchableOpacity
                     onPress={() => removeFavorite(fav.id)}
-                    style={{ padding: 4 }}
+                    style={{ padding: space.xxs }}
+                    accessibilityLabel="Remove from favorites"
+                    accessibilityRole="button"
                   >
                     <Trash2 color={theme.textSecondary} size={16} />
                   </TouchableOpacity>
                 </View>
-                <Text
-                  style={{ fontSize: 15, color: theme.text, lineHeight: 22 }}
+                <Pressable
+                  onPress={() => {
+                    if (fav.hook) {
+                      const scriptData = {
+                        topic: fav.topic || "Saved hook",
+                        hooks: [fav.hook],
+                        script: [],
+                        broll: [],
+                        cta: "",
+                        caption: "",
+                      };
+                      useResultNavigationStore.getState().setPendingScriptData(scriptData);
+                      router.push({
+                        pathname: "/result",
+                        params: { from: "favorite" },
+                      });
+                    }
+                  }}
+                  accessibilityLabel={`Open hook from ${fav.topic}`}
+                  accessibilityRole="button"
                 >
-                  {fav.hook}
-                </Text>
-              </View>
+                  <Text
+                    style={[typography.bodySmall, { color: theme.text, lineHeight: 22 }]}
+                  >
+                    {fav.hook}
+                  </Text>
+                </Pressable>
+              </Card>
             ))}
           </View>
         )}

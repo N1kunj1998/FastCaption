@@ -7,32 +7,47 @@ import {
   Alert,
   Switch,
   Modal,
+  Pressable,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import * as WebBrowser from "expo-web-browser";
-import { ChevronRight, Crown, LogIn, LogOut, Palette } from "lucide-react-native";
+import Constants from "expo-constants";
+import { ChevronRight, Crown, LogIn, LogOut, Palette, ExternalLink, Star, MessageCircle } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useTheme } from "@/utils/themeStore";
+import { useTheme, COLOR_THEMES } from "@/utils/themeStore";
 import { useAuth } from "@/utils/auth/useAuth";
-import { NICHES, STYLES } from "@/constants/onboarding";
+import { useAuthModal } from "@/utils/auth/store";
+import { useSubscription, PAYWALL_RESULT, logRevenueCatDiagnostics } from "@/utils/purchases";
+import { useToastStore } from "@/utils/toastStore";
+import { NICHES, STYLES, PLATFORMS } from "@/constants/onboarding";
+import { space, radius, typography } from "@/constants/designTokens";
+import { Section, Card, Button } from "@/components/ui";
 
 const TERMS_URL =
   process.env.EXPO_PUBLIC_TERMS_URL || "https://example.com/terms";
 const PRIVACY_URL =
   process.env.EXPO_PUBLIC_PRIVACY_URL || "https://example.com/privacy";
-const PRO_URL =
-  process.env.EXPO_PUBLIC_PRO_URL || "https://example.com/upgrade";
+const RATE_URL =
+  process.env.EXPO_PUBLIC_RATE_URL || "https://apps.apple.com/app/fastcaption";
+const FEEDBACK_URL =
+  process.env.EXPO_PUBLIC_FEEDBACK_URL || "mailto:support@example.com";
 
 export default function Settings() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { theme, isDark, setTheme, loadTheme } = useTheme();
-  const { isAuthenticated, isReady, signIn, signOut } = useAuth();
+  const { theme, isDark, setTheme, loadTheme, colorThemeId, setColorTheme } = useTheme();
+  const { isAuthenticated, isReady, auth, signOut } = useAuth();
+  const { open: openAuth } = useAuthModal();
+  const { isPro, isLoading: subscriptionLoading, presentPaywall, presentCustomerCenter } = useSubscription();
+  const showToast = useToastStore((s) => s.show);
   const [niche, setNiche] = useState("");
   const [style, setStyle] = useState("");
+  const [platform, setPlatform] = useState("");
+  const [userName, setUserName] = useState("");
   const [showEditPreferences, setShowEditPreferences] = useState(false);
+  const [showColorThemeModal, setShowColorThemeModal] = useState(false);
   const [editNiche, setEditNiche] = useState(null);
   const [editStyle, setEditStyle] = useState(null);
 
@@ -55,16 +70,23 @@ export default function Settings() {
   }
 
   async function loadSettings() {
-    const userNiche = await AsyncStorage.getItem("userNiche");
-    const userStyle = await AsyncStorage.getItem("userStyle");
+    const [userNiche, userStyle, userPlatform, name] = await Promise.all([
+      AsyncStorage.getItem("userNiche"),
+      AsyncStorage.getItem("userStyle"),
+      AsyncStorage.getItem("userPlatform"),
+      AsyncStorage.getItem("userName"),
+    ]);
     setNiche(userNiche || "Not set");
     setStyle(userStyle || "Not set");
+    const platformLabel = PLATFORMS.find((p) => p.id === userPlatform)?.label;
+    setPlatform(platformLabel || (userPlatform ? userPlatform : "Not set"));
+    setUserName((name || "").trim());
   }
 
   async function handleResetOnboarding() {
     Alert.alert(
-      "Reset Preferences",
-      "This will reset your niche and style preferences.",
+      "Reset onboarding",
+      "This will take you back to the onboarding flow. Your preferences (niche, style, platform, name) will be reset.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -72,12 +94,21 @@ export default function Settings() {
           style: "destructive",
           onPress: async () => {
             await AsyncStorage.removeItem("hasOnboarded");
+            await AsyncStorage.removeItem("userNiche");
+            await AsyncStorage.removeItem("userStyle");
+            await AsyncStorage.removeItem("userPlatform");
+            await AsyncStorage.removeItem("userName");
             router.replace("/onboarding");
           },
         },
-      ],
+      ]
     );
   }
+
+  const accountLabel = isAuthenticated ? "Signed in" : "Sign in";
+  const accountSubtitle = isAuthenticated
+    ? (auth?.user?.email ? auth.user.email : "Sign out of your account")
+    : "Sign in to sync across devices";
 
   return (
     <View
@@ -89,8 +120,10 @@ export default function Settings() {
     >
       <StatusBar style={isDark ? "light" : "dark"} />
 
-      <View style={{ padding: 24, paddingBottom: 16 }}>
-        <Text style={{ fontSize: 28, fontWeight: "700", color: theme.text }}>
+      <View style={{ paddingHorizontal: space.lg, paddingBottom: space.md }}>
+        <Text
+          style={[typography.heading1, { color: theme.text }]}
+        >
           Settings
         </Text>
       </View>
@@ -98,66 +131,31 @@ export default function Settings() {
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{
-          padding: 24,
-          paddingTop: 8,
+          paddingHorizontal: space.lg,
+          paddingTop: space.xs,
           paddingBottom: insets.bottom + 80,
         }}
         showsVerticalScrollIndicator={false}
       >
-        <View style={{ gap: 24 }}>
-          <View>
-            <Text
-              style={{
-                fontSize: 12,
-                fontWeight: "600",
-                color: theme.textSecondary,
-                marginBottom: 12,
-                textTransform: "uppercase",
-              }}
-            >
-              Appearance
-            </Text>
-            <View
-              style={{
-                backgroundColor: theme.cardBg,
-                borderRadius: 12,
-                borderWidth: 1,
-                borderColor: theme.border,
-              }}
-            >
+        <View style={{ gap: space.lg }}>
+          {/* Appearance */}
+          <Section title="APPEARANCE">
+            <Card padding="none" bordered>
               <View
                 style={{
-                  padding: 16,
+                  padding: space.md,
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "space-between",
                 }}
               >
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 12,
-                  }}
-                >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
                   <Palette color={theme.accent} size={24} />
                   <View>
-                    <Text
-                      style={{
-                        fontSize: 16,
-                        fontWeight: "600",
-                        color: theme.text,
-                      }}
-                    >
-                      {isDark ? "Dark Theme" : "Light Theme"}
+                    <Text style={[typography.label, { color: theme.text }]}>
+                      {isDark ? "Dark theme" : "Light theme"}
                     </Text>
-                    <Text
-                      style={{
-                        fontSize: 14,
-                        color: theme.textSecondary,
-                        marginTop: 2,
-                      }}
-                    >
+                    <Text style={[typography.caption, { color: theme.textSecondary, marginTop: space.xxs }]}>
                       Switch between themes
                     </Text>
                   </View>
@@ -165,237 +163,279 @@ export default function Settings() {
                 <Switch
                   value={!isDark}
                   onValueChange={(value) => setTheme(!value)}
-                  trackColor={{ false: "#767577", true: theme.primary }}
+                  trackColor={{ false: theme.border, true: theme.primary }}
                   thumbColor={theme.cardBg}
+                  accessibilityLabel={isDark ? "Switch to light theme" : "Switch to dark theme"}
                 />
               </View>
-            </View>
-          </View>
-
-          {isReady && (
-            <View>
-              <Text
-                style={{
-                  fontSize: 12,
-                  fontWeight: "600",
-                  color: theme.textSecondary,
-                  marginBottom: 12,
-                  textTransform: "uppercase",
-                }}
-              >
-                Account
-              </Text>
-              <TouchableOpacity
-                onPress={isAuthenticated ? signOut : signIn}
-                style={{
-                  backgroundColor: theme.cardBg,
-                  padding: 16,
-                  borderRadius: 12,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 12,
-                  borderWidth: 1,
-                  borderColor: theme.border,
-                }}
-              >
-                {isAuthenticated ? (
-                  <LogOut color={theme.text} size={24} />
-                ) : (
-                  <LogIn color={theme.primary} size={24} />
-                )}
-                <View style={{ flex: 1 }}>
-                  <Text
-                    style={{ fontSize: 16, fontWeight: "600", color: theme.text }}
-                  >
-                    {isAuthenticated ? "Sign out" : "Sign in"}
+            </Card>
+            <TouchableOpacity onPress={() => setShowColorThemeModal(true)} activeOpacity={0.8} style={{ marginTop: 1 }}>
+              <Card padding="md" bordered>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                  <Text style={[typography.label, { color: theme.text }]}>
+                    Color theme
                   </Text>
-                  <Text
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                    <View
+                      style={{
+                        width: 20,
+                        height: 20,
+                        borderRadius: 10,
+                        backgroundColor: (COLOR_THEMES[colorThemeId] || COLOR_THEMES.purple).primary,
+                      }}
+                    />
+                    <Text style={[typography.bodySmall, { color: theme.textSecondary }]}>
+                      {(COLOR_THEMES[colorThemeId] || COLOR_THEMES.purple).name}
+                    </Text>
+                    <ChevronRight color={theme.textTertiary} size={20} />
+                  </View>
+                </View>
+              </Card>
+            </TouchableOpacity>
+          </Section>
+
+          {/* Account */}
+          {isReady && (
+            <Section title="ACCOUNT">
+              <TouchableOpacity
+                onPress={isAuthenticated ? signOut : () => openAuth({ mode: "signup" })}
+                activeOpacity={0.8}
+              >
+                <Card padding="md" bordered>
+                  <View
                     style={{
-                      fontSize: 14,
-                      color: theme.textSecondary,
-                      marginTop: 2,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: space.sm,
                     }}
                   >
-                    {isAuthenticated
-                      ? "Sign out of your account"
-                      : "Sign in to sync across devices"}
-                  </Text>
-                </View>
-                <ChevronRight color={theme.textTertiary} size={20} />
+                    {isAuthenticated ? (
+                      <LogOut color={theme.text} size={24} />
+                    ) : (
+                      <LogIn color={theme.primary} size={24} />
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={[typography.label, { color: theme.text }]}>
+                        {accountLabel}
+                      </Text>
+                      <Text style={[typography.caption, { color: theme.textSecondary, marginTop: space.xxs }]}>
+                        {accountSubtitle}
+                      </Text>
+                    </View>
+                    <ChevronRight color={theme.textTertiary} size={20} />
+                  </View>
+                </Card>
               </TouchableOpacity>
-            </View>
+            </Section>
           )}
 
-          <View>
-            <Text
-              style={{
-                fontSize: 12,
-                fontWeight: "600",
-                color: theme.textSecondary,
-                marginBottom: 12,
-                textTransform: "uppercase",
-              }}
-            >
-              Subscription
-            </Text>
+          {/* Subscription — FastCaption Pro */}
+          <Section title="SUBSCRIPTION">
             <TouchableOpacity
-              onPress={() => WebBrowser.openBrowserAsync(PRO_URL)}
-              style={{
-                backgroundColor: theme.cardBg,
-                padding: 16,
-                borderRadius: 12,
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 12,
-                borderWidth: 1,
-                borderColor: theme.border,
+              onPress={async () => {
+                if (isPro) {
+                  await presentCustomerCenter();
+                } else {
+                  const result = await presentPaywall();
+                  const success = result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED;
+                  if (success) showToast("Welcome to FastCaption Pro!");
+                }
               }}
+              activeOpacity={0.8}
+              disabled={subscriptionLoading}
             >
-              <Crown color="#FFD700" size={24} />
-              <View style={{ flex: 1 }}>
-                <Text
-                  style={{ fontSize: 16, fontWeight: "600", color: theme.text }}
-                >
-                  Upgrade to Pro
-                </Text>
-                <Text
+              <Card padding="md" bordered>
+                <View
                   style={{
-                    fontSize: 14,
-                    color: theme.textSecondary,
-                    marginTop: 2,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: space.sm,
                   }}
                 >
-                  Unlimited scripts & premium features
-                </Text>
-              </View>
-              <ChevronRight color={theme.textTertiary} size={20} />
+                  <Crown color={isPro ? "#FFD700" : theme.textSecondary} size={24} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[typography.label, { color: theme.text }]}>
+                      {isPro ? "FastCaption Pro" : "Upgrade to FastCaption Pro"}
+                    </Text>
+                    <Text style={[typography.caption, { color: theme.textSecondary, marginTop: space.xxs }]}>
+                      {isPro
+                        ? "Manage subscription & billing"
+                        : "Monthly or yearly — unlimited scripts & premium features"}
+                    </Text>
+                  </View>
+                  <ChevronRight color={theme.textTertiary} size={20} />
+                </View>
+              </Card>
             </TouchableOpacity>
-          </View>
+          </Section>
 
-          <View>
-            <Text
-              style={{
-                fontSize: 12,
-                fontWeight: "600",
-                color: theme.textSecondary,
-                marginBottom: 12,
-                textTransform: "uppercase",
-              }}
-            >
-              Preferences
-            </Text>
-            <View
-              style={{
-                backgroundColor: theme.cardBg,
-                borderRadius: 12,
-                overflow: "hidden",
-                borderWidth: 1,
-                borderColor: theme.border,
-              }}
-            >
+          {/* Preferences */}
+          <Section title="PREFERENCES">
+            <Card padding="none" bordered>
               <View
                 style={{
-                  padding: 16,
+                  padding: space.md,
                   borderBottomWidth: 1,
                   borderBottomColor: theme.border,
                 }}
               >
-                <Text
-                  style={{
-                    fontSize: 14,
-                    color: theme.textSecondary,
-                    marginBottom: 4,
-                  }}
-                >
+                <Text style={[typography.caption, { color: theme.textSecondary, marginBottom: space.xxs }]}>
                   Niche
                 </Text>
-                <Text
-                  style={{
-                    fontSize: 16,
-                    color: theme.text,
-                    textTransform: "capitalize",
-                  }}
-                >
+                <Text style={[typography.body, { color: theme.text, textTransform: "capitalize" }]}>
                   {niche}
                 </Text>
               </View>
-              <View style={{ padding: 16 }}>
-                <Text
-                  style={{
-                    fontSize: 14,
-                    color: theme.textSecondary,
-                    marginBottom: 4,
-                  }}
-                >
+              <View
+                style={{
+                  padding: space.md,
+                  borderBottomWidth: 1,
+                  borderBottomColor: theme.border,
+                }}
+              >
+                <Text style={[typography.caption, { color: theme.textSecondary, marginBottom: space.xxs }]}>
                   Style
                 </Text>
-                <Text
-                  style={{
-                    fontSize: 16,
-                    color: theme.text,
-                    textTransform: "capitalize",
-                  }}
-                >
+                <Text style={[typography.body, { color: theme.text, textTransform: "capitalize" }]}>
                   {style}
                 </Text>
               </View>
-            </View>
+              <View
+                style={{
+                  padding: space.md,
+                  borderBottomWidth: 1,
+                  borderBottomColor: theme.border,
+                }}
+              >
+                <Text style={[typography.caption, { color: theme.textSecondary, marginBottom: space.xxs }]}>
+                  Platform
+                </Text>
+                <Text style={[typography.body, { color: theme.text }]}>
+                  {platform}
+                </Text>
+              </View>
+              <View style={{ padding: space.md }}>
+                <Text style={[typography.caption, { color: theme.textSecondary, marginBottom: space.xxs }]}>
+                  Name
+                </Text>
+                <Text style={[typography.body, { color: theme.text }]}>
+                  {userName || "Not set"}
+                </Text>
+              </View>
+            </Card>
             <TouchableOpacity
               onPress={openEditPreferences}
-              style={{
-                marginTop: 12,
-                padding: 16,
-                alignItems: "center",
-              }}
+              style={{ marginTop: space.xs }}
+              activeOpacity={0.8}
             >
-              <Text style={{ fontSize: 14, color: theme.primary }}>
+              <Text style={[typography.bodySmall, { fontWeight: "600", color: theme.primary }]}>
                 Change preferences
               </Text>
             </TouchableOpacity>
-            <TouchableOpacity
+            <Button
               onPress={handleResetOnboarding}
-              style={{
-                marginTop: 8,
-                padding: 12,
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ fontSize: 12, color: theme.textTertiary }}>
-                Reset onboarding (start over)
-              </Text>
-            </TouchableOpacity>
-          </View>
+              variant="ghost"
+              label="Reset onboarding"
+              size="sm"
+              style={{ marginTop: space.sm }}
+              accessibilityLabel="Reset onboarding and start over"
+            />
+          </Section>
 
-          <View>
-            <Text
-              style={{
-                fontSize: 12,
-                fontWeight: "600",
-                color: theme.textSecondary,
-                marginBottom: 12,
-                textTransform: "uppercase",
-              }}
-            >
-              About
-            </Text>
-            <View
-              style={{
-                backgroundColor: theme.cardBg,
-                borderRadius: 12,
-                borderWidth: 1,
-                borderColor: theme.border,
-              }}
-            >
+          {/* Developer (dev only) */}
+          {__DEV__ && (
+            <Section title="DEVELOPER">
+              <TouchableOpacity
+                onPress={async () => {
+                  await logRevenueCatDiagnostics();
+                  showToast("RevenueCat diagnostics logged — check Metro/console");
+                }}
+                activeOpacity={0.8}
+              >
+                <Card padding="md" bordered>
+                  <View>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                      <Text style={[typography.label, { color: theme.primary, flex: 1 }]}>
+                        Log RevenueCat diagnostics
+                      </Text>
+                      <ChevronRight color={theme.textTertiary} size={20} />
+                    </View>
+                    <Text style={[typography.caption, { color: theme.textSecondary, marginTop: space.xxs }]}>
+                      Dump offerings, customerInfo, store products to console
+                    </Text>
+                  </View>
+                </Card>
+              </TouchableOpacity>
+            </Section>
+          )}
+
+          {/* About */}
+          <Section title="ABOUT">
+            <Card padding="none" bordered>
+              <TouchableOpacity
+                onPress={() => RATE_URL.startsWith("http") && WebBrowser.openBrowserAsync(RATE_URL)}
+                style={{
+                  padding: space.md,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.sm,
+                }}
+                activeOpacity={0.8}
+                disabled={!RATE_URL.startsWith("http")}
+              >
+                <Star color={theme.accent} size={20} />
+                <Text style={[typography.body, { color: theme.text, flex: 1 }]}>
+                  Rate us
+                </Text>
+                <ChevronRight color={theme.textTertiary} size={20} />
+              </TouchableOpacity>
+              <View
+                style={{
+                  height: 1,
+                  backgroundColor: theme.border,
+                  marginHorizontal: space.md,
+                }}
+              />
+              <TouchableOpacity
+                onPress={() => {
+                  if (FEEDBACK_URL.startsWith("http")) {
+                    WebBrowser.openBrowserAsync(FEEDBACK_URL);
+                  } else if (FEEDBACK_URL.startsWith("mailto:")) {
+                    WebBrowser.openBrowserAsync(FEEDBACK_URL);
+                  }
+                }}
+                style={{
+                  padding: space.md,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.sm,
+                }}
+                activeOpacity={0.8}
+              >
+                <MessageCircle color={theme.accent} size={20} />
+                <Text style={[typography.body, { color: theme.text, flex: 1 }]}>
+                  Feedback
+                </Text>
+                <ChevronRight color={theme.textTertiary} size={20} />
+              </TouchableOpacity>
+              <View
+                style={{
+                  height: 1,
+                  backgroundColor: theme.border,
+                  marginHorizontal: space.md,
+                }}
+              />
               <TouchableOpacity
                 onPress={() => WebBrowser.openBrowserAsync(TERMS_URL)}
                 style={{
-                  padding: 16,
+                  padding: space.md,
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "space-between",
                 }}
+                activeOpacity={0.8}
               >
-                <Text style={{ fontSize: 16, color: theme.text }}>
+                <Text style={[typography.body, { color: theme.text }]}>
                   Terms of Service
                 </Text>
                 <ChevronRight color={theme.textTertiary} size={20} />
@@ -404,48 +444,60 @@ export default function Settings() {
                 style={{
                   height: 1,
                   backgroundColor: theme.border,
-                  marginHorizontal: 16,
+                  marginHorizontal: space.md,
                 }}
               />
               <TouchableOpacity
                 onPress={() => WebBrowser.openBrowserAsync(PRIVACY_URL)}
                 style={{
-                  padding: 16,
+                  padding: space.md,
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "space-between",
                 }}
+                activeOpacity={0.8}
               >
-                <Text style={{ fontSize: 16, color: theme.text }}>
+                <Text style={[typography.body, { color: theme.text }]}>
                   Privacy Policy
                 </Text>
                 <ChevronRight color={theme.textTertiary} size={20} />
               </TouchableOpacity>
-            </View>
-          </View>
+            </Card>
+            <Text
+              style={[
+                typography.caption,
+                { color: theme.textTertiary, marginTop: space.sm },
+              ]}
+            >
+              Version {Constants.expoConfig?.version ?? "1.0.0"}
+            </Text>
+          </Section>
         </View>
       </ScrollView>
 
+      {/* Preferences modal */}
       <Modal
         visible={showEditPreferences}
         animationType="slide"
         transparent
         onRequestClose={() => setShowEditPreferences(false)}
       >
-        <View
+        <Pressable
           style={{
             flex: 1,
             backgroundColor: "rgba(0,0,0,0.5)",
             justifyContent: "flex-end",
           }}
+          onPress={() => setShowEditPreferences(false)}
         >
-          <View
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
             style={{
               backgroundColor: theme.background,
-              borderTopLeftRadius: 20,
-              borderTopRightRadius: 20,
-              padding: 24,
-              paddingBottom: insets.bottom + 24,
+              borderTopLeftRadius: radius.xl,
+              borderTopRightRadius: radius.xl,
+              padding: space.lg,
+              paddingBottom: insets.bottom + space.lg,
               maxHeight: "80%",
             }}
           >
@@ -454,62 +506,51 @@ export default function Settings() {
                 flexDirection: "row",
                 justifyContent: "space-between",
                 alignItems: "center",
-                marginBottom: 20,
+                marginBottom: space.lg,
               }}
             >
-              <Text
-                style={{ fontSize: 20, fontWeight: "700", color: theme.text }}
-              >
+              <Text style={[typography.heading3, { color: theme.text }]}>
                 Change preferences
               </Text>
               <TouchableOpacity
                 onPress={() => setShowEditPreferences(false)}
-                style={{ padding: 8 }}
+                style={{ padding: space.xs }}
               >
-                <Text style={{ fontSize: 16, color: theme.primary }}>Cancel</Text>
+                <Text style={[typography.body, { fontWeight: "600", color: theme.primary }]}>
+                  Cancel
+                </Text>
               </TouchableOpacity>
             </View>
 
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              style={{ maxHeight: 400 }}
-            >
-              <Text
-                style={{
-                  fontSize: 14,
-                  fontWeight: "600",
-                  color: theme.text,
-                  marginBottom: 10,
-                }}
-              >
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 400 }}>
+              <Text style={[typography.label, { color: theme.text, marginBottom: space.sm }]}>
                 Niche
               </Text>
-              <View style={{ gap: 8, marginBottom: 20 }}>
+              <View style={{ gap: space.xs, marginBottom: space.lg }}>
                 {NICHES.map((n) => (
                   <TouchableOpacity
                     key={n.id}
                     onPress={() => setEditNiche(n.id)}
+                    activeOpacity={0.8}
                     style={{
-                      backgroundColor:
-                        editNiche === n.id ? theme.primary : theme.cardBg,
-                      padding: 14,
-                      borderRadius: 12,
+                      backgroundColor: editNiche === n.id ? theme.primary : theme.cardBg,
+                      padding: space.md,
+                      borderRadius: radius.md,
                       flexDirection: "row",
                       alignItems: "center",
-                      gap: 12,
+                      gap: space.sm,
                       borderWidth: 1,
-                      borderColor:
-                        editNiche === n.id ? theme.primary : theme.border,
+                      borderColor: editNiche === n.id ? theme.primary : theme.border,
                     }}
                   >
                     <Text style={{ fontSize: 24 }}>{n.emoji}</Text>
                     <Text
-                      style={{
-                        fontSize: 16,
-                        fontWeight: "600",
-                        color:
-                          editNiche === n.id ? theme.primaryText : theme.text,
-                      }}
+                      style={[
+                        typography.label,
+                        {
+                          color: editNiche === n.id ? theme.primaryText : theme.text,
+                        },
+                      ]}
                     >
                       {n.label}
                     </Text>
@@ -517,50 +558,44 @@ export default function Settings() {
                 ))}
               </View>
 
-              <Text
-                style={{
-                  fontSize: 14,
-                  fontWeight: "600",
-                  color: theme.text,
-                  marginBottom: 10,
-                }}
-              >
+              <Text style={[typography.label, { color: theme.text, marginBottom: space.sm }]}>
                 Style
               </Text>
-              <View style={{ gap: 8, marginBottom: 24 }}>
+              <View style={{ gap: space.xs, marginBottom: space.lg }}>
                 {STYLES.map((s) => (
                   <TouchableOpacity
                     key={s.id}
                     onPress={() => setEditStyle(s.id)}
+                    activeOpacity={0.8}
                     style={{
-                      backgroundColor:
-                        editStyle === s.id ? theme.primary : theme.cardBg,
-                      padding: 14,
-                      borderRadius: 12,
+                      backgroundColor: editStyle === s.id ? theme.primary : theme.cardBg,
+                      padding: space.md,
+                      borderRadius: radius.md,
                       borderWidth: 1,
-                      borderColor:
-                        editStyle === s.id ? theme.primary : theme.border,
+                      borderColor: editStyle === s.id ? theme.primary : theme.border,
                     }}
                   >
                     <Text
-                      style={{
-                        fontSize: 16,
-                        fontWeight: "600",
-                        color:
-                          editStyle === s.id ? theme.primaryText : theme.text,
-                      }}
+                      style={[
+                        typography.label,
+                        {
+                          color: editStyle === s.id ? theme.primaryText : theme.text,
+                        },
+                      ]}
                     >
                       {s.label}
                     </Text>
                     <Text
-                      style={{
-                        fontSize: 13,
-                        color:
-                          editStyle === s.id
-                            ? theme.primaryText
-                            : theme.textSecondary,
-                        marginTop: 2,
-                      }}
+                      style={[
+                        typography.caption,
+                        {
+                          color:
+                            editStyle === s.id
+                              ? theme.primaryText
+                              : theme.textSecondary,
+                          marginTop: space.xxs,
+                        },
+                      ]}
                     >
                       {s.desc}
                     </Text>
@@ -569,27 +604,50 @@ export default function Settings() {
               </View>
             </ScrollView>
 
-            <TouchableOpacity
+            <Button
               onPress={saveEditPreferences}
-              style={{
-                backgroundColor: theme.primary,
-                padding: 16,
-                borderRadius: 12,
-                alignItems: "center",
-              }}
-            >
-              <Text
-                style={{
-                  fontSize: 16,
-                  fontWeight: "600",
-                  color: theme.primaryText,
-                }}
-              >
-                Save
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+              variant="primary"
+              label="Save"
+              fullWidth
+            />
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Color theme picker modal */}
+      <Modal visible={showColorThemeModal} transparent animationType="fade">
+        <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", padding: space.lg }} onPress={() => setShowColorThemeModal(false)}>
+          <Pressable style={{ backgroundColor: theme.surfaceElevated, borderRadius: radius.xl, padding: space.xl, borderWidth: 1, borderColor: theme.border }} onPress={(e) => e.stopPropagation()}>
+            <Text style={[typography.heading3, { color: theme.text, marginBottom: space.lg }]}>Color theme</Text>
+            <View style={{ gap: space.sm }}>
+              {Object.values(COLOR_THEMES).map((c) => (
+                <TouchableOpacity
+                  key={c.id}
+                  onPress={async () => {
+                    await setColorTheme(c.id);
+                    setShowColorThemeModal(false);
+                  }}
+                  activeOpacity={0.8}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    padding: space.md,
+                    borderRadius: radius.md,
+                    backgroundColor: colorThemeId === c.id ? theme.primary : theme.surface,
+                    borderWidth: 2,
+                    borderColor: colorThemeId === c.id ? theme.primary : theme.border,
+                  }}
+                >
+                  <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: c.primary, marginRight: space.sm }} />
+                  <Text style={[typography.label, { color: colorThemeId === c.id ? theme.primaryText : theme.text }]}>{c.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Pressable onPress={() => setShowColorThemeModal(false)} style={{ marginTop: space.lg, alignItems: "center" }}>
+              <Text style={[typography.bodySmall, { color: theme.textSecondary }]}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
   );

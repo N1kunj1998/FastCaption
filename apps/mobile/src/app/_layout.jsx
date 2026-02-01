@@ -1,10 +1,15 @@
 import { useAuth } from "@/utils/auth/useAuth";
 import { AuthModal } from "@/utils/auth/useAuthModal";
+import { useTheme } from "@/utils/themeStore";
+import { initPurchases, logRevenueCatDiagnostics } from "@/utils/purchases";
+import { Toast } from "@/components/ui";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+// Keep branded splash visible until auth/theme are ready, then hide
 SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient({
@@ -20,10 +25,23 @@ const queryClient = new QueryClient({
 
 export default function RootLayout() {
   const { initiate, isReady } = useAuth();
+  const loadTheme = useTheme((s) => s.loadTheme);
+
+  useEffect(() => {
+    loadTheme();
+  }, [loadTheme]);
 
   useEffect(() => {
     initiate();
   }, [initiate]);
+
+  useEffect(() => {
+    initPurchases();
+    if (__DEV__) {
+      const t = setTimeout(() => logRevenueCatDiagnostics(), 2500);
+      return () => clearTimeout(t);
+    }
+  }, []);
 
   useEffect(() => {
     if (isReady) {
@@ -31,6 +49,7 @@ export default function RootLayout() {
     }
   }, [isReady]);
 
+  // Don't render app until ready so native splash (from app.json splash config) stays visible
   if (!isReady) {
     return null;
   }
@@ -45,6 +64,7 @@ export default function RootLayout() {
           <Stack.Screen name="result" />
         </Stack>
         <AuthModal />
+        <Toast />
       </GestureHandlerRootView>
     </QueryClientProvider>
   );

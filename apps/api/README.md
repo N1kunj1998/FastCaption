@@ -80,6 +80,7 @@ For a physical device, use your Mac’s LAN IP (e.g. `http://192.168.1.10:3000`)
 | `OLLAMA_BASE_URL` | e.g. `http://localhost:11434`. Used only when `OPENAI_API_KEY` is not set. |
 | `OLLAMA_MODEL` | Ollama model (e.g. `llama3.2`). |
 | `PORT` | Server port (default: 3000). |
+| `MONGODB_URI` | Optional. When set, user details are stored in MongoDB on sign-in/sign-up (database `fast-caption`, collection `users`). |
 
 **Priority:** If `OPENAI_API_KEY` is set → use OpenAI. Else if `OLLAMA_BASE_URL` is set → use Ollama.
 
@@ -95,6 +96,7 @@ For a physical device, use your Mac’s LAN IP (e.g. `http://192.168.1.10:3000`)
    - `OPENAI_MODEL` (optional, default `gpt-4o-mini`)
    - `JWT_SECRET` (for auth; use a long random string)
    - `GOOGLE_CLIENT_ID` (optional; for Google sign-in)
+   - `MONGODB_URI` (optional; to store users on sign-in/sign-up)
 
 3. Deploy. Your API will be at `https://your-project.vercel.app`. Use that URL (no `/api` prefix) as the mobile app’s base URL, e.g. `EXPO_PUBLIC_API_URL=https://your-project.vercel.app`.
 
